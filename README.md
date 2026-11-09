@@ -12,6 +12,44 @@ model, tools and budgets is evaluated against it on generated incidents.
 - Full design, decisions and build log: [`docs/implementation_plan.md`](docs/implementation_plan.md)
 - Coding-assistant transcript: [`transcripts/`](transcripts/)
 
+## Run it locally (Windows)
+
+**You need:** Python 3.11+, Docker Desktop (running) and the [Claude CLI](https://docs.claude.com/en/docs/claude-code/overview),
+logged in.
+
+**1. Download and set up** (one time, takes a few minutes):
+
+```powershell
+git clone https://github.com/Jaideep27/Multi-Agent-Production-Incident-Investigation-System.git
+cd Multi-Agent-Production-Incident-Investigation-System
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+. .\scripts\load_env.ps1
+```
+
+**2. Investigate one test case** with both systems. This calls Claude and takes about 8 minutes:
+
+```powershell
+.venv\Scripts\python scripts\run_eval.py --label eval-v4 --pattern exchange --company-context --cache-mode off --plans INC-08
+```
+
+**3. Open the viewer**, then go to http://127.0.0.1:8000:
+
+```powershell
+.venv\Scripts\python -m investigator.web --label eval-v4
+```
+
+A new database has no results, so the viewer lists only the cases you have run. To run all 12
+cases, repeat step 2 without `--plans INC-08` (24 investigations, about 1.5 hours, and a lot of
+Claude quota). The recorded results are in [`results/`](results/).
+
+**Next time,** in a new PowerShell window from the project folder:
+
+```powershell
+docker compose up -d db
+. .\scripts\load_env.ps1
+.venv\Scripts\python -m investigator.web --label eval-v4
+```
+
 ## Layout
 
 ```
@@ -138,6 +176,9 @@ The home page also explains how it works (6 agents vs 1, the 5 tools). The
 .\start      # starts the demo database and the viewer: http://127.0.0.1:8000
 .\stop       # stops the viewer (or press Ctrl+C in its window)
 ```
+
+`.\start` uses the development demo database from `scripts\demo_db_in_docker.ps1`. After a fresh
+download, use the steps in "Run it locally" instead.
 
 There is no login: the data is synthetic and the server listens on 127.0.0.1 only. To share
 it, put Tailscale in front of it. Use `tailscale serve` for your tailnet only. For a public
