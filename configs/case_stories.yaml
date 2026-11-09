@@ -1,0 +1,1317 @@
+# The plain-language story of each test case, for the viewer only.
+#
+# This file contains the answers. Only src/investigator/web/story.py reads it, and only once
+# the answer key may be shown; agents never see it (a test enforces this). What agents may be
+# given about a company is in company_context.yaml.
+#
+# It holds the telling. Times, before/during numbers, log lines and diffs are read from the
+# database when the page is built, so they are not repeated here as data.
+
+stories:
+  INC-01:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: Suddenly, about 3 in every 10 orders failed with an error page when customers pressed "Place order".
+      false_lead: The website (web-frontend) shows errors, and a past outage had the same checkout errors. But web-frontend was only passing on a failure from checkout-api, and the past outage had a different cause.
+      cause: A new version of checkout-api (the checkout program) was released. It handles the promo code without first checking that one was entered, so an order with an empty promo code box crashes.
+      why_everyone: Every order goes through checkout-api, so the crash reached customers straight away as an error page.
+      fix: Roll checkout-api back to the previous version, then add the missing check.
+
+    what_went_wrong:
+      - >-
+        Within a minute or so, a large share of orders stopped going through. Customers who
+        pressed "Place order" got an error page, and the share of orders that worked fell from
+        about 99% to about 72%. The number of people shopping did not change. The on-call
+        engineer for the storefront filed the report about 15 minutes after it began.
+
+    impact:
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+        short: Orders that worked
+      - service: web-frontend
+        metric: error_rate_pct
+        label: Pages returning an error
+        short: Pages returning an error
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - title: The website is the one showing errors
+        why_tempting: web-frontend's error rate jumps and it logs dozens of warnings, so it looks like the broken part.
+        why_wrong: Its warnings all say checkout-api returned an error. It is passing on someone else's failure, and its own speed and processor stay normal.
+        checks:
+          - service: web-frontend
+            metric: cpu_pct
+            label: web-frontend processor busy
+          - service: web-frontend
+            metric: p99_latency_ms
+            label: web-frontend response time
+
+      - title: A past outage with the same checkout errors
+        why_tempting: The incident history has "Checkout errors from an expired payment-service config secret", with the same kind of checkout failure.
+        why_wrong: A past outage is only a lead. Nothing in today's data involves a secret, and payment-service stayed healthy.
+        checks:
+          - service: payment-service
+            metric: error_rate_pct
+            label: payment-service error rate
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 846ms" look suspicious when something is broken.
+        why_wrong: These 11 routine warnings are scattered across services, and some appeared before the trouble began.
+
+    clues:
+      change:
+        title: A new version was released just before
+        meaning: A deploy puts a new version of a program live. The change shows the promo code step used to skip an empty code and now always reads it. It is the only change in the hour, and the errors began about a minute later.
+      log:
+        title: The crash names the exact line
+        meaning: A NullPointerException means the program tried to use something that was empty. Here that is promoCode, inside the code that handles promo codes, which is exactly what the release changed.
+      metric:
+        title: checkout-api's errors jumped
+        meaning: Its error rate went from almost nothing to about a third of requests right after the release. The errors start here, so this is where to look.
+
+    answer:
+      short: A release of checkout-api reads the promo code without checking that one exists, so orders with no promo code crash.
+      paragraphs:
+        - >-
+          The old version skipped the promo step when the box was empty. The new one always
+          calls trim() on the code to remove stray spaces. When no code was entered there is
+          nothing to trim, the program throws an error, and the customer gets HTTP 500, the
+          standard "something broke on our side" response.
+        - >-
+          Nothing else was wrong: the database, payments and the rest of the store kept working.
+          The test data shows about 3 in 10 orders failing, and it does not record how many
+          orders had no promo code.
+      category_note: Scored as a bad deploy, because a new version of the program was released and that release contains the bug.
+
+    timeline:
+      change: Version v2.4.1 of checkout-api goes live.
+      first_sign: checkout-api logs its first crash on an empty promo code.
+      users_hit: The share of orders that work falls to about 72%.
+      reported: The storefront on-call engineer reports failing checkouts.
+      data_ends: The data ends. The release is still live and orders are still failing.
+
+    fixes:
+      - "Now: roll checkout-api back to v2.4.0."
+      - "Next: add the missing check so an empty promo code is simply skipped."
+      - "Later: add a test for orders with no promo code, and release new versions to a small share of users first."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Deploy
+        meaning: Putting a new version of a program live.
+      - term: HTTP 500
+        meaning: The standard response for "something broke on the server".
+      - term: Null
+        meaning: Empty. The value is not there at all.
+      - term: NullPointerException
+        meaning: The crash a Java program gives when it tries to use an empty value.
+      - term: Error rate
+        meaning: The share of requests that end in an error.
+      - term: Rollback
+        meaning: Going back to the previous version.
+      - term: GC pause
+        meaning: A short stop while a program cleans up memory it no longer needs.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-02:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: During a big rush of shoppers, customers kept being logged out in the middle of shopping, and more orders failed.
+      false_lead: With that many shoppers, it looks as if the database or checkout must have buckled. Both were fine.
+      cause: The store remembers who is logged in using a small memory store called session-cache. The rush filled it completely, so it started throwing away the oldest logins to make room.
+      why_everyone: Every page checks that memory store to see who you are. Once your login was thrown away, the site treated you as a stranger and sent you to the login page.
+      fix: Give the memory store more room, and stop it throwing away logins.
+
+    what_went_wrong:
+      - >-
+        A surge of shoppers hit the site, about four times the usual traffic. Soon customers
+        were being sent back to the login page while browsing or paying, and the share of
+        orders that worked fell from about 99% to about 89%. Nobody had changed anything: there
+        were no releases or settings changes in the whole hour. Customer support reported it.
+
+    impact:
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+        short: Orders that worked
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+        short: Requests arriving per second
+      - service: session-cache
+        metric: hit_ratio_pct
+        label: Logins found in the memory store
+
+    misleading:
+      - title: The rush must have overloaded the database or checkout
+        why_tempting: Four times the traffic is exactly when you expect the busiest systems to buckle.
+        why_wrong: They did not. The database's processor and checkout-api's error rate stayed at their usual levels.
+        checks:
+          - service: orders-db
+            metric: cpu_pct
+            label: orders-db processor busy
+          - service: checkout-api
+            metric: error_rate_pct
+            label: checkout-api error rate
+
+      - title: The website is logging people out
+        why_tempting: web-frontend is the one sending people to the login page, and its error rate rises.
+        why_wrong: It does so only because it asked session-cache who the customer was and got no answer. Its own logs say the lookup missed.
+        checks:
+          - service: web-frontend
+            metric: cpu_pct
+            label: web-frontend processor busy
+
+      - title: A past outage on the same memory store
+        why_tempting: The history has "Cart resets after a session-cache failover", which is the same service with similar symptoms.
+        why_wrong: That was a failover, one machine taking over from another. Here nothing switched over; the store simply ran out of room.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 573ms" look suspicious when something is broken.
+        why_wrong: These 9 routine warnings are scattered across services, and several appeared before the trouble began.
+
+    clues:
+      log:
+        title: The memory store says it is full
+        meaning: "\"used_memory reached maxmemory\" means session-cache hit its 4 GB limit. \"Evicting keys\" means it is deleting saved entries to make room. Those entries are customers' logins."
+      metric:
+        title: session-cache's memory filled up
+        meaning: Its memory use climbed to almost 100% and stayed there. Once it is full, every new login pushes an existing one out.
+
+    answer:
+      short: A surge of about four times the usual traffic filled session-cache to its memory limit, so it began deleting live logins.
+      paragraphs:
+        - >-
+          Every logged-in customer has a small saved entry in session-cache. With four times the
+          traffic there were far more entries than the 4 GB limit could hold. At the limit, its
+          setting (allkeys-lru) is to delete whichever entries were used longest ago, even if
+          those customers are still shopping.
+        - >-
+          The next time such a customer loads a page, web-frontend finds no entry and sends them
+          to the login page. Some of those customers were in the middle of placing an order,
+          which is why orders failed too.
+      category_note: Scored as resource exhaustion, because a resource ran out (the cache's memory). Nothing was released or reconfigured.
+
+    timeline:
+      first_sign: session-cache logs that it is full and has started deleting entries.
+      users_hit: The share of orders that work falls to about 89%.
+      reported: Customer support reports that customers are being logged out.
+      data_ends: The data ends. The store is still full and customers are still being logged out.
+
+    fixes:
+      - "Now: raise session-cache's memory limit."
+      - "Next: stop it deleting live logins, by keeping sessions in a store that does not evict them or by adding capacity."
+      - "Later: alert on cache memory before it is full, and plan capacity for traffic surges."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Cache
+        meaning: Fast short-term memory that keeps data close at hand.
+      - term: Session
+        meaning: The saved entry that tells the site who you are while you are logged in.
+      - term: Eviction
+        meaning: A full cache deleting entries to make room for new ones.
+      - term: allkeys-lru
+        meaning: A cache setting that deletes whichever entries were used longest ago.
+      - term: Hit ratio
+        meaning: The share of lookups that find what they were looking for.
+      - term: Failover
+        meaning: A backup machine taking over from one that stopped.
+      - term: GC pause
+        meaning: A short stop while a program cleans up memory it no longer needs.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-03:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: Suddenly, about 3 in every 10 orders failed, and checkout became very slow.
+      false_lead: Timeouts talking to the database (orders-db) make it look as if the database was struggling. It was fine, and had fewer open connections than usual.
+      cause: A settings change cut the number of database connections checkout-api (the checkout program) may use from 100 to 10. Think of a shop going from 100 tills to 10.
+      why_everyone: Every order needs a connection. With only 10, orders queued up, and any order that waited more than 5 seconds was given up on.
+      fix: Put checkout-api's setting back to 100.
+
+    what_went_wrong:
+      - >-
+        Without warning, checkout became very slow and about 3 in every 10 orders failed. The
+        share of orders that worked fell from about 99% to about 72%. The number of people
+        shopping did not change, and no new version of any program was released. Customer
+        support reported it about 20 minutes after it began.
+
+    impact:
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+        short: Orders that worked
+      - service: checkout-api
+        metric: db_pool_wait_ms
+        label: Waiting for a database connection
+        short: Time spent waiting for a database connection
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - title: The database must be overloaded
+        why_tempting: Checkout's errors are about waiting for the database, so the database looks like the problem.
+        why_wrong: The database was fine. Its processor stayed normal and its open connections fell, because checkout was allowed to use far fewer of them.
+        checks:
+          - service: orders-db
+            metric: cpu_pct
+            label: orders-db processor busy
+          - service: orders-db
+            metric: active_connections
+            label: orders-db open connections
+
+      - title: The website is the one timing out
+        why_tempting: web-frontend logs dozens of timeouts and its response time jumps.
+        why_wrong: Its warnings all say the call to checkout-api timed out. It is waiting on checkout, not failing by itself.
+        checks:
+          - service: web-frontend
+            metric: cpu_pct
+            label: web-frontend processor busy
+
+      - title: checkout-api's own error chart looks fine
+        why_tempting: Its error rate stays flat for the whole hour, so a quick look says it is healthy.
+        why_wrong: Its logs show 71 errors in that time. This is a simplification in the test data; a real system would probably show its error rate rising too.
+        checks:
+          - service: checkout-api
+            metric: error_rate_pct
+            label: checkout-api error rate
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "slow DNS lookup" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services and have nothing to do with orders.
+
+    clues:
+      change:
+        title: A setting was changed just before
+        meaning: The setting db.max_pool_size controls how many database connections checkout-api may hold. It went from 100 to 10. It is the only change in the hour, and the errors began about a minute later.
+      log:
+        title: checkout-api says it ran out of connections
+        meaning: "\"Pool 10/10 in use\" means all ten connections were taken. The order waited 5 seconds for one to free up, and then gave up."
+      metric:
+        title: Connections in use hit the new limit
+        meaning: Checkout normally used about 40 connections at once. It is now stuck at exactly 10, which is the new limit. It needs more than it is allowed.
+
+    answer:
+      short: A settings change cut checkout-api's database connections from 100 to 10, far fewer than it normally needs.
+      paragraphs:
+        - >-
+          A connection pool is a set of ready-made connections to the database that requests
+          share. Checkout normally uses about 40 at once. With a limit of 10, every connection
+          was always taken, and new orders had to queue for one.
+        - >-
+          An order that waited 5 seconds was given up on and failed. Those that got through were
+          slow because of the queue. The database itself was fine; the bottleneck was the limit
+          in front of it.
+      category_note: Scored as a config change, because only a setting changed. No new version of the program was released.
+
+    timeline:
+      change: A settings change cuts checkout-api's connection pool from 100 to 10.
+      first_sign: checkout-api logs its first order that waited 5 seconds and gave up.
+      users_hit: The share of orders that work falls to about 72%.
+      reported: Customer support reports that order success has dropped.
+      data_ends: The data ends. The setting is still 10 and orders are still failing.
+
+    fixes:
+      - "Now: set db.max_pool_size back to 100."
+      - "Next: find out why the value was changed, and whether a lower number was ever intended."
+      - "Later: validate settings changes against real usage, and alert when the pool is full."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Database connection
+        meaning: An open line between a program and the database. Each request needs one while it works.
+      - term: Connection pool
+        meaning: A shared set of ready-made database connections.
+      - term: Config change
+        meaning: Changing a setting without releasing a new version of the program.
+      - term: Timeout
+        meaning: Giving up on a request after waiting a set amount of time.
+      - term: p99
+        meaning: 99 of every 100 requests are faster than this.
+      - term: DNS lookup
+        meaning: Turning a name into a network address. Routine and usually harmless.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-04:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: Suddenly, about 15 in every 100 orders started failing at the payment stage.
+      false_lead: payment-service (the payment program) had a new release just three minutes earlier, and the errors appear in its logs. But that release only changed notes and a log format.
+      cause: The security certificate of fraud-scoring-api (the fraud-checking program) ran out, like an expired passport. payment-service was right to refuse to talk to it. The errors appear in payment-service, but the fault is with fraud-scoring-api.
+      why_everyone: Payments are checked for fraud before they go through, so any order that needed that check failed.
+      fix: Renew the certificate on fraud-scoring-api.
+
+    what_went_wrong:
+      - >-
+        Without warning, part of the orders began failing at payment, and the share that worked
+        fell from about 99% to about 85%. The number of people shopping did not change. The
+        storefront on-call engineer reported it about 14 minutes after it began.
+
+    impact:
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+        short: Orders that worked
+      - service: web-frontend
+        metric: error_rate_pct
+        label: Pages returning an error
+        short: Pages returning an error
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - decoy_type: red_herring_change
+        title: A release just before the failures
+        why_tempting: payment-service released v2.10.0 less than three minutes before the first error, and the errors appear in its own logs. It looks like an open-and-shut bad release.
+        why_wrong: Reading the change settles it. It only updated setup notes in a README and switched the log format to JSON, and neither can break a secure connection to another service.
+
+      - title: fraud-scoring-api looks perfectly healthy
+        why_tempting: Its error rate, speed and processor are all normal, so it looks like the one service that cannot be at fault.
+        why_wrong: That is what an expired certificate looks like. Connections are refused before any request reaches it, so it has nothing unusual to report.
+        checks:
+          - service: fraud-scoring-api
+            metric: error_rate_pct
+            label: fraud-scoring-api error rate
+          - service: fraud-scoring-api
+            metric: cpu_pct
+            label: fraud-scoring-api processor busy
+
+      - title: A past outage about something expired
+        why_tempting: The history has "Checkout errors from an expired payment-service config secret", with the same symptoms and even the word "expired".
+        why_wrong: That was a password-like secret inside payment-service. Today's log line names a certificate on a different service.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 804ms" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services and do not line up with the failures.
+
+    clues:
+      log:
+        title: payment-service says the certificate has expired
+        meaning: A secure connection starts with a TLS handshake, in which each side checks the other's certificate. This line says the certificate presented by fraud-scoring-api ran out at 14:36:00, and it names both the service and the time.
+      metric:
+        title: Failed handshakes jumped from zero
+        meaning: payment-service had no failed secure connections at all, and then dozens every second from the moment the certificate ran out.
+
+    answer:
+      short: The security certificate of fraud-scoring-api expired, so payment-service refused every secure connection to it.
+      paragraphs:
+        - >-
+          Services prove who they are using certificates, and each certificate has an end date.
+          When a payment needs a fraud check, payment-service opens a secure connection to fraud-scoring-api.
+          When its certificate passed its end date at 14:36:00, the check failed and
+          payment-service correctly refused to continue.
+        - >-
+          The failure then travels back up the chain: payment-service cannot finish, checkout-api
+          reports that its call failed, and web-frontend shows the customer an error. The errors
+          appear in those services, but the problem belongs to fraud-scoring-api.
+      category_note: Scored as certificate expiry on fraud-scoring-api, the service that owns the certificate, and not on the services where the errors appear.
+
+    timeline:
+      decoy_change: payment-service releases v2.10.0, which changes only notes and a log format.
+      first_sign: payment-service logs its first refused connection, naming the expired certificate.
+      users_hit: The share of orders that work falls to about 85%.
+      reported: The storefront on-call engineer reports that order success has dropped.
+      data_ends: The data ends. The certificate is still expired and orders are still failing.
+
+    fixes:
+      - "Now: renew the certificate on fraud-scoring-api."
+      - "Next: check when the other services' certificates expire."
+      - "Later: renew certificates automatically, and alert well before they run out."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: TLS
+        meaning: The standard way programs make a secure, encrypted connection.
+      - term: Certificate
+        meaning: A digital ID that proves a service is who it says it is. It has an end date.
+      - term: Handshake
+        meaning: The first exchange of a secure connection, where the certificates are checked.
+      - term: Deploy
+        meaning: Putting a new version of a program live.
+      - term: README
+        meaning: A notes file for developers. It does not affect how a program runs.
+      - term: GC pause
+        meaning: A short stop while a program cleans up memory it no longer needs.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-05:
+    domain: search_platform
+
+    # the short version, read first; the rest opens with "Read the full story"
+    summary:
+      company: Kestrel Search runs a search website. You type some words and it shows results.
+      problem: One evening, searches suddenly became very slow, and some stopped working.
+      false_lead: A past outage looked exactly the same, and that time the search database (elasticsearch) was to blame. This time it was fine.
+      cause: A team switched on a new search feature in query-parser (the program that checks the words you type). It added a badly written rule, and on some searches that rule got stuck doing a huge amount of pointless work.
+      why_everyone: Every search has to pass through query-parser. Once it got stuck, all searches had to wait in line.
+      fix: Switch the new feature off, then rewrite the rule.
+
+    what_went_wrong:
+      - >-
+        Searches that normally came back almost instantly suddenly took about 8 seconds, and
+        about 7 in every 100 failed. The website stayed up and the number of people searching
+        did not change.
+
+    impact:
+      - service: search-service
+        metric: p99_latency_ms
+        label: Slowest searches (p99)
+        short: Time taken by the slowest searches
+      - service: search-service
+        metric: search_success_rate_pct
+        label: Searches that worked
+        short: Searches that worked
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - decoy_type: lookalike_history
+        title: A past outage that looks identical
+        why_tempting: The history shows the same 8-second slowdown, caused by Elasticsearch pausing to clean up its memory.
+        why_wrong: Elasticsearch was healthy this time. Its memory and processor did not change.
+        checks:
+          - service: elasticsearch
+            metric: jvm_heap_used_pct
+            label: Elasticsearch memory in use
+          - service: elasticsearch
+            metric: cpu_pct
+            label: Elasticsearch processor busy
+
+      - title: query-parser's own charts look fine
+        why_tempting: Its response time and error rate stay flat for the whole hour.
+        why_wrong: Its processor was nearly full and its logs show timeouts. This is a simplification in the test data; a real system would probably show its response time rising too.
+        checks:
+          - service: query-parser
+            metric: p99_latency_ms
+            label: query-parser's response time
+          - service: query-parser
+            metric: error_rate_pct
+            label: query-parser's error rate
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 494ms" look suspicious when something is broken.
+        why_wrong: These 9 routine warnings are scattered across services, and some appeared before the trouble began.
+
+    clues:
+      change:
+        title: A feature was switched on
+        meaning: A feature flag turns a feature on without releasing new code. This one added a new checking rule. It is the only change in the hour, and searches slowed within a minute.
+      log:
+        title: query-parser reported a very slow check
+        meaning: One check against the new rule took 2.5 seconds and held up a worker. The name synonym_pattern links this slowdown to the change above.
+      metric:
+        title: query-parser's processor filled up
+        meaning: It jumped to nearly 100% when the feature went on, while no other service's processor moved. The extra work was happening in exactly one place.
+
+    answer:
+      short: A feature switch added a badly written rule that made query-parser do an enormous amount of useless work.
+      paragraphs:
+        - >-
+          The new rule, ^(\w+\s?)*$, lets the computer split the same letters into groups in a
+          huge number of ways. When a search contains something the rule does not allow, such as
+          a "!", the computer tries every possible split before giving up, and each extra letter
+          roughly doubles the work. This flaw is called catastrophic backtracking.
+        - >-
+          query-parser's workers got stuck on these checks, so other searches waited in line.
+          search-service waits at most 5 seconds for query-parser and does not retry, so
+          searches came back very slowly or failed.
+      category_note: Scored as a config change and not a bad deploy, because no new version was released. Only a setting changed.
+
+    timeline:
+      change: The relevance team switches on fuzzy synonyms in query-parser.
+      first_sign: query-parser logs its first very slow check.
+      users_hit: The slowest searches jump to about 8 seconds.
+      first_error: query-parser starts giving up on searches (error 504).
+      reported: The SEO team reports that search is very slow.
+      data_ends: The data ends. The feature is still on and search is still slow.
+
+    fixes:
+      - "Now: switch fuzzy synonyms off."
+      - "Next: rewrite the rule, and put a time limit on every check."
+      - "Later: test new rules against unusual searches, and roll features out to a small share of users first."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Feature flag
+        meaning: An on/off setting that turns a feature on without releasing new code.
+      - term: Regular expression (regex)
+        meaning: A compact rule for checking whether text matches a pattern.
+      - term: Catastrophic backtracking
+        meaning: When a badly written regex tries an enormous number of possibilities before giving up.
+      - term: p99
+        meaning: 99 of every 100 requests are faster than this.
+      - term: CPU
+        meaning: How busy a program's processor is, from 0 to 100%.
+      - term: Timeout
+        meaning: Giving up on a request after waiting a set amount of time.
+      - term: Error 504
+        meaning: The HTTP status for "I waited for another part of the system and gave up".
+      - term: GC pause
+        meaning: A short stop while a program cleans up memory it no longer needs.
+      - term: JVM heap
+        meaning: The memory a Java program such as Elasticsearch works in.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-06:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: About 4 in every 10 product pages came up empty, yet every dashboard said the site was healthy.
+      false_lead: The dashboards show almost no errors, so it looks as if nothing is wrong. They only count whether a page answered, not whether it had anything on it.
+      cause: A new version of inventory-grpc (the stock-checking program) hides its failures. When it can't look up stock, it answers "OK" with an empty list instead of reporting a problem.
+      why_everyone: Product pages get their stock from inventory-grpc. An "OK" with nothing in it passes through every service as a success, so the page simply comes up empty.
+      fix: Roll back the inventory-grpc release so failures are reported as failures again.
+
+    what_went_wrong:
+      - >-
+        Customers started seeing product pages with nothing on them, about 4 in every 10. The
+        confusing part is that the dashboards stayed green: almost every request still came
+        back with "200 OK". Orders in progress were not affected. Customer support reported it,
+        about 12 minutes after the empty pages began.
+
+    impact:
+      - service: catalog-graphql
+        metric: empty_responses_pct
+        label: Product pages coming back empty
+        short: Product pages coming back empty
+      - service: web-frontend
+        metric: error_rate_pct
+        label: Errors on the dashboard
+        short: Errors on the dashboard
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+
+    misleading:
+      - title: The dashboards say everything is fine
+        why_tempting: Error rates stay near zero and nearly every request returns 200 OK, so there seems to be nothing to investigate.
+        why_wrong: A status code only says the program answered. These answers were empty, and only the empty-response metric shows it.
+        checks:
+          - service: web-frontend
+            metric: error_rate_pct
+            label: web-frontend error rate
+          - service: inventory-grpc
+            metric: error_rate_pct
+            label: inventory-grpc error rate
+
+      - title: The warehouse lookup looks like the whole story
+        why_tempting: The log line says the stock lookup timed out on warehouse shard 5, so the warehouse looks like the cause.
+        why_wrong: That is the trigger, and it is a fair reading. But before this release the same failure was reported as an error. The release is what turned it into empty pages nobody could see, so the answer key blames the release.
+
+      - title: The release came too early to matter
+        why_tempting: The release went live about 25 minutes before the first empty page, which feels too long ago to be related.
+        why_wrong: The new behaviour only shows when a lookup fails. Nothing looked wrong until the first lookup failed.
+
+      - title: Two monitors disagree
+        why_tempting: catalog-graphql has two sources for its error rate and they do not match, which casts doubt on the numbers.
+        why_wrong: Both are close to zero. This is noise added to the test, and neither source can see empty answers.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 477ms" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services and have nothing to do with product pages.
+
+    clues:
+      change:
+        title: A release changed how lookup failures are handled
+        meaning: Before, a failed stock lookup was returned as an error. After, it is caught and answered as OK with an empty list. That is exactly the behaviour customers are seeing.
+      log:
+        title: inventory-grpc admits what it is doing
+        meaning: The line says the lookup failed and, in the same breath, "returning OK with errors[] and no items". It is reporting a failure as a success.
+      metric:
+        title: Empty answers jumped to 40%
+        meaning: This metric counts answers with nothing in them. It went from almost none to about 40%, matching what customers saw, while the error rate did not move.
+
+    answer:
+      short: Release v4.2.0 of inventory-grpc catches stock lookup failures and answers OK with no items, so pages come up empty while dashboards stay green.
+      paragraphs:
+        - >-
+          Programs report success or failure with a status code. In the old version, a failed
+          stock lookup came back as an error that the services above could act on. The new
+          version catches the failure and answers "200 OK" with an empty list.
+        - >-
+          So when lookups on warehouse shard 5 began timing out, each service passed along a
+          successful but empty answer until the customer got a blank page. Because every status
+          code said OK, the error dashboards had nothing to show.
+      category_note: Scored as a bad deploy. This is a judgement call, since the failing warehouse lookup is the trigger, but the release is what turned it into a silent failure.
+
+    timeline:
+      change: Version v4.2.0 of inventory-grpc goes live. Nothing looks wrong yet.
+      first_sign: inventory-grpc logs its first failed stock lookup, returned as OK.
+      users_hit: About 40% of product pages start coming back empty.
+      reported: Customer support reports empty product pages.
+      data_ends: The data ends. The release is still live and pages are still empty.
+
+    fixes:
+      - "Now: roll inventory-grpc back to v4.1.3."
+      - "Next: find out why lookups on warehouse shard 5 are timing out."
+      - "Later: return real errors, and add a dashboard alert for empty answers, not only error codes."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Status code
+        meaning: A number sent with every answer saying whether it worked. 200 means OK.
+      - term: Deploy
+        meaning: Putting a new version of a program live.
+      - term: Shard
+        meaning: One slice of a large data store that has been split up.
+      - term: Deadline exceeded
+        meaning: The operation took longer than it was allowed.
+      - term: Silent failure
+        meaning: Something goes wrong but nothing reports it as wrong.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-07:
+    domain: saas_platform
+
+    summary:
+      company: Harbourline is an online software company. Customers log in to use its apps and are billed monthly.
+      problem: Logins and profile pages began failing on and off. About 13 in every 100 requests failed.
+      false_lead: The timeouts appear to start in user-profile (the profile service), even before anything changed. But its clock runs 4 minutes behind, so those times are wrong.
+      cause: A settings change cut how many requests each caller may make to auth-service (the login service), from 500 per second to 50. Far too low for normal use.
+      why_everyone: Rejected callers immediately tried again, up to three times each. Those retries multiplied the traffic and kept everyone over the limit.
+      fix: Put auth-service's limit back to 500 per second.
+
+    what_went_wrong:
+      - >-
+        Logins and profile pages started failing intermittently, and the share of requests
+        that worked fell from about 99% to about 87%. The number of visitors did not change,
+        but traffic into the login service jumped more than six times. Customer success
+        reported it about 17 minutes after it began.
+
+    impact:
+      - service: api-gateway
+        metric: api_success_rate_pct
+        label: Requests that worked
+        short: Requests that worked
+      - service: auth-service
+        metric: requests_per_s
+        label: Requests reaching the login service, per second
+        short: Requests reaching the login service, per second
+      - service: edge-lb
+        metric: requests_per_s
+        label: Visitors' requests arriving per second
+
+    misleading:
+      - decoy_type: downstream_symptom
+        title: Other services are timing out
+        why_tempting: user-profile and notification-worker fill the logs with timeouts, so they look like the broken parts.
+        why_wrong: They are victims. Each one is waiting on a service further along that is rejecting or delaying its calls.
+
+      - title: The timeouts seem to start before the change
+        why_tempting: The earliest timeout in the logs is from user-profile at 20:03:53, before the settings change at 20:06:05. That appears to rule the change out.
+        why_wrong: user-profile's clock runs 240 seconds behind. Corrected, that timeout happened at 20:07:53, after the change and after the first rejection.
+
+      - title: The login service looks perfectly healthy
+        why_tempting: auth-service's processor, speed and error rate all stay normal.
+        why_wrong: Rejecting a request is cheap and is not counted as an error here. The sign is in its count of rejected requests.
+        checks:
+          - service: auth-service
+            metric: error_rate_pct
+            label: auth-service error rate
+          - service: auth-service
+            metric: cpu_pct
+            label: auth-service processor busy
+
+      - title: A past outage on the login service
+        why_tempting: The history has "Login latency during an auth-service token cache flush", with the same service and similar symptoms.
+        why_wrong: That was a cache being emptied. Nothing today involves a cache, and the log says rate limit exceeded.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 400ms" look suspicious when something is broken.
+        why_wrong: These 12 routine warnings are scattered across services and do not line up with the failures.
+
+    clues:
+      change:
+        title: The rate limit was cut by ten times
+        meaning: A rate limit caps how many requests one caller can make per second. It went from 500 to 50, and the first rejections came about a minute and a half later.
+      log:
+        title: The login service says it is rejecting callers
+        meaning: Error 429 means "too many requests". This line names the new limit of 50 per second, and the callers being refused.
+      metric:
+        title: Rejected requests went from none to thousands
+        meaning: The login service normally rejects almost nothing. It is now refusing nearly two thousand requests every second.
+
+    answer:
+      short: A settings change cut auth-service's limit from 500 to 50 requests per second per caller, and callers' retries turned the rejections into a storm.
+      paragraphs:
+        - >-
+          Other services call auth-service constantly. Under the new limit of 50 per second, most
+          of those calls were refused with error 429.
+        - >-
+          Each refused caller was set to try again, two or three more times. So every refusal
+          created more calls, keeping everyone over the limit. This is called a retry storm.
+          user-profile, which also depends on auth-service, slowed down and timed out its own
+          callers, spreading the problem further.
+      category_note: Scored as a config change on auth-service, because only a setting changed there. The timeouts elsewhere are a consequence.
+
+    timeline:
+      change: A settings change cuts auth-service's limit from 500 to 50 requests per second.
+      first_sign: auth-service starts refusing callers with error 429.
+      users_hit: The share of requests that work falls to about 87%.
+      reported: Customer success reports failing logins and profile pages.
+      data_ends: The data ends. The limit is still 50 and requests are still failing.
+
+    fixes:
+      - "Now: set the limit back to 500 per second."
+      - "Next: add a growing wait between retries, so callers back off instead of piling on."
+      - "Later: check settings changes against real traffic, and synchronise the clock on user-profile."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. An app is many services calling each other.
+      - term: Rate limit
+        meaning: A cap on how many requests one caller may make per second.
+      - term: Error 429
+        meaning: The standard response for "too many requests".
+      - term: Retry storm
+        meaning: Failed calls being retried so much that the retries become the problem.
+      - term: Clock skew
+        meaning: One machine's clock disagreeing with the others, which makes its log times misleading.
+      - term: Timeout
+        meaning: Giving up on a request after waiting a set amount of time.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-08:
+    domain: saas_platform
+
+    summary:
+      company: Harbourline is an online software company. Customers log in to use its apps and are billed monthly.
+      problem: Invoices stopped being created, and the queue of invoice work kept growing.
+      false_lead: A settings change to analytics-ingest landed five minutes before the trouble. It only made that unrelated service write more detailed logs.
+      cause: A new release of billing-service (the billing program) changed the format of invoice messages and added a required field to the database. invoice-worker (the invoice program) did not change. It still expects the old format, so it can't read the new messages.
+      why_everyone: Every invoice goes through invoice-worker. It rejected them all, so nothing got created and the backlog kept growing. The errors appear in invoice-worker, but the change that caused them was in billing-service.
+      fix: Roll back the billing-service release. Updating invoice-worker to read the new format would also work.
+
+    what_went_wrong:
+      - >-
+        Customers stopped receiving invoices, and the queue of invoice work grew to tens of
+        thousands of messages. The main apps kept working normally, which made it easy to miss.
+        The release behind it had gone out 45 minutes before the first failure, long enough
+        that nobody connected the two. Customer success reported it about 16 minutes after the
+        failures began.
+
+    impact:
+      - service: kafka-billing
+        metric: consumer_lag
+        label: Invoice messages waiting
+        short: Invoice messages waiting
+      - service: kafka-billing
+        metric: dead_letter_messages
+        label: Messages set aside as unreadable
+        short: Messages set aside as unreadable
+      - service: api-gateway
+        metric: api_success_rate_pct
+        label: App requests that worked
+
+    misleading:
+      - decoy_type: red_herring_change
+        title: A settings change just before the trouble
+        why_tempting: analytics-ingest had a settings change five minutes before the first failure, the closest change in time.
+        why_wrong: Reading it settles it. It only turned up the logging detail on an unrelated service that has nothing to do with invoices.
+
+      - title: The real release looks too old to matter
+        why_tempting: The billing release went out 45 minutes before the first failure, and even before the data starts, so it is easy to dismiss.
+        why_wrong: Time alone proves nothing. The error names a field that exactly this release added.
+
+      - title: The queue system must be at fault
+        why_tempting: The growing backlog is in Kafka, and the history has "Invoice delays during a Kafka broker restart".
+        why_wrong: Kafka was delivering messages normally. The backlog grew because the program reading them kept rejecting them.
+
+      - title: The invoice program looks broken
+        why_tempting: All of the errors come from invoice-worker, so it looks like the program with the bug.
+        why_wrong: It did not change. It is correctly refusing messages in a format it does not understand. The change that caused this was upstream.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 879ms" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services and have nothing to do with invoices.
+
+    clues:
+      change:
+        title: A release changed the invoice format and the database
+        meaning: The release moved invoice messages to a new format (v3) and added a required column called tax_region. Anything still using the old format is now out of step.
+      log:
+        title: The invoice program can't read the new messages
+        meaning: Deserialising means reading a message into something a program can use. It fails on tax_region, the field the release added, because invoice-worker only knows format v2.
+      metric:
+        title: The backlog exploded
+        meaning: Consumer lag is how many messages are waiting to be processed. It went from about 100 to tens of thousands, because messages kept arriving and none could be handled.
+
+    answer:
+      short: Release v3.0.0 of billing-service changed the invoice message format and added a required database column. invoice-worker did not change and can't handle the new format.
+      paragraphs:
+        - >-
+          When two programs share data, both have to agree on its shape. The release changed
+          that shape on one side only: billing-service began sending format v3 messages and
+          added a tax_region column that must always be filled in.
+        - >-
+          invoice-worker still expected format v2. It could not read the new messages, and when
+          it tried to save invoices without tax_region, the database refused. Rejected messages
+          were moved to a dead-letter queue, and no invoices came out.
+      category_note: Scored as a bad deploy of billing-service, the program that made the incompatible change, and not of invoice-worker, where the errors appear.
+
+    timeline:
+      change: Version v3.0.0 of billing-service goes live with the database change. Nothing looks wrong yet.
+      decoy_change: analytics-ingest has its log detail turned up. It has nothing to do with this.
+      first_sign: invoice-worker logs its first message it can't read.
+      users_hit: The backlog of invoice messages starts climbing.
+      reported: Customer success reports that invoices have stopped.
+      data_ends: The data ends. The backlog is still growing and no invoices are being created.
+
+    fixes:
+      - "Now: roll billing-service back, or release an invoice-worker that understands format v3."
+      - "Next: replay the messages from the dead-letter queue so the missing invoices are created."
+      - "Later: make format changes backward compatible, and test both programs together before release."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. An app is many services calling each other.
+      - term: Kafka
+        meaning: A system that passes messages between programs in order.
+      - term: Consumer lag
+        meaning: How many messages are waiting to be read.
+      - term: Dead-letter queue
+        meaning: A place where messages that can't be processed are set aside.
+      - term: Schema
+        meaning: The agreed shape of a piece of data.
+      - term: Migration
+        meaning: A change to the structure of a database.
+      - term: NOT NULL
+        meaning: A database rule that a column must always have a value.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-09:
+    domain: search_platform
+
+    summary:
+      company: Kestrel Search runs a search website. You type some words and it shows results.
+      problem: Suddenly, about 1 in every 5 searches failed.
+      false_lead: search-service (the search coordinator) shows all the errors, so it looks like the broken part. It was only waiting on another service that kept disappearing.
+      cause: recommendation-engine (the program that adds related suggestions) ran out of its memory allowance, so the system kept killing and restarting it.
+      why_everyone: Each search asks recommendation-engine for suggestions. While it was being restarted, the search that needed it waited 3 seconds and failed.
+      fix: Give recommendation-engine more memory, then find out why it is using so much.
+
+    what_went_wrong:
+      - >-
+        Searches began failing, and the share that worked fell from about 99.6% to about 80%.
+        The number of searches had not changed, and nobody had released or changed anything in
+        the whole hour. Customer support reported it about 15 minutes after it began. The
+        tools the investigators use were misbehaving too: the log search timed out on its
+        first try, and the metrics search returned only half of its results.
+
+    impact:
+      - service: search-service
+        metric: search_success_rate_pct
+        label: Searches that worked
+        short: Searches that worked
+      - service: recommendation-engine
+        metric: memory_usage_pct
+        label: Suggestions program's memory in use
+        short: Suggestions program's memory in use
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - title: The search coordinator is the one failing
+        why_tempting: search-service reports about 20% errors and logs dozens of warnings.
+        why_wrong: Its warnings all say the call to recommendation-engine timed out. It is passing on someone else's failure.
+        checks:
+          - service: search-service
+            metric: cpu_pct
+            label: search-service processor busy
+
+      - title: A past outage involving suggestions
+        why_tempting: The history has "Recommendation errors after model-store evictions", which is the same feature failing.
+        why_wrong: That time the files it depends on were lost. Today model-store is healthy, and the log says the program itself ran out of memory.
+        checks:
+          - service: model-store
+            metric: hit_ratio_pct
+            label: model-store files found
+
+      - title: Its own error chart looks fine
+        why_tempting: recommendation-engine's error rate stays flat, so a quick look says it is healthy.
+        why_wrong: A program that keeps being killed cannot report its own errors. Its memory chart and logs tell the real story.
+        checks:
+          - service: recommendation-engine
+            metric: error_rate_pct
+            label: recommendation-engine error rate
+
+      - title: The investigators' own tools were unreliable
+        why_tempting: A timed-out log search or a half-empty metric result can look like evidence that something is missing.
+        why_wrong: Those failures are simulated on purpose. A good investigator retries the timeout and treats a partial result as incomplete, not as proof.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 820ms" look suspicious when something is broken.
+        why_wrong: These 10 routine warnings are scattered across services, and some appeared before the trouble began.
+
+    clues:
+      log:
+        title: The system says it killed the program
+        meaning: OOMKilled means "out of memory". The program went past its 2 GB limit and the system stopped it by force. The same line appears again and again as it restarts and runs out once more.
+      metric:
+        title: Its memory filled up
+        meaning: Memory in use went from about 60% to about 99% of its allowance, leaving no room. That is what triggers the kills.
+
+    answer:
+      short: recommendation-engine hit its 2 GB memory limit, so its containers kept being killed and restarted, failing the searches that needed them.
+      paragraphs:
+        - >-
+          Each copy of the program runs inside a container with a fixed memory limit of 2 GB. When
+          it goes over, the system kills the container and starts a new one. Anything it was
+          doing at that moment is lost.
+        - >-
+          search-service waits up to 3 seconds for suggestions. While containers were being
+          killed and restarted, those calls timed out and the whole search failed. The data
+          does not show why the program started using so much more memory.
+      category_note: Scored as resource exhaustion, because the program ran out of memory. No release or setting was changed.
+
+    timeline:
+      first_sign: recommendation-engine is killed for running out of memory, for the first time.
+      users_hit: The share of searches that work falls to about 80%.
+      reported: Customer support reports that search success has dropped.
+      data_ends: The data ends. The program is still being killed and searches are still failing.
+
+    fixes:
+      - "Now: raise the memory limit of recommendation-engine."
+      - "Next: find out why its memory use grew."
+      - "Later: let searches succeed without suggestions when that service is unavailable."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Container
+        meaning: A sealed box a program runs in, with its own limits on memory.
+      - term: OOMKilled
+        meaning: Stopped by the system for using more memory than it was allowed.
+      - term: Heap
+        meaning: The main area of memory a program uses for its data.
+      - term: Timeout
+        meaning: Giving up on a request after waiting a set amount of time.
+      - term: Partial result
+        meaning: A tool returning only part of what it should.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-10:
+    domain: saas_platform
+
+    summary:
+      company: Harbourline is an online software company. Customers log in to use its apps and are billed monthly.
+      problem: About 8 in every 10 usage-tracking events were being thrown away.
+      false_lead: Kafka, the message system, is the obvious suspect for lost events. It was fine. And the log search was broken for the whole investigation, so the usual place to look was closed.
+      cause: The disk used by analytics-ingest (the program that collects events) hit its speed limit. Its waiting area filled up, so it began throwing events away.
+      why_everyone: All usage events pass through analytics-ingest on their way in. It could accept only as many as its disk could save.
+      fix: Give analytics-ingest a faster disk, or spread the work over more disks.
+
+    what_went_wrong:
+      - >-
+        Analytics stopped adding up. About 80% of usage events were being dropped, while the
+        rest of the apps kept working normally. Nobody had released or changed anything in the
+        hour. Customer success reported it about 14 minutes after it began. To make it harder,
+        the log search tool failed on every attempt, so investigators had only metrics, changes
+        and the service map to go on.
+
+    impact:
+      - service: analytics-ingest
+        metric: dropped_events_pct
+        label: Events thrown away
+        short: Events thrown away
+      - service: analytics-ingest
+        metric: disk_queue_depth
+        label: Disk requests waiting
+        short: Disk requests waiting
+      - service: api-gateway
+        metric: api_success_rate_pct
+        label: App requests that worked
+
+    misleading:
+      - title: With no logs, it seems impossible to tell
+        why_tempting: The log search fails every time, and logs are normally where the explanation is found.
+        why_wrong: The metrics are enough. Disk use, disk queue and dropped events all move together on one service.
+
+      - title: The message system must be losing events
+        why_tempting: Events travel through Kafka, and the history has "Invoice delays during a Kafka broker restart".
+        why_wrong: Kafka shows no backlog. The events are lost before they ever reach it.
+        checks:
+          - service: kafka-events
+            metric: consumer_lag
+            label: kafka-events messages waiting
+
+      - title: The collecting program looks healthy
+        why_tempting: analytics-ingest's processor, speed and error rate all stay normal.
+        why_wrong: The bottleneck is its disk, not its processor. Those charts cannot see that.
+        checks:
+          - service: analytics-ingest
+            metric: cpu_pct
+            label: analytics-ingest processor busy
+          - service: analytics-ingest
+            metric: error_rate_pct
+            label: analytics-ingest error rate
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "slow DNS lookup" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services and have nothing to do with analytics.
+
+    clues:
+      metric:
+        title: The disk was working flat out
+        meaning: Disk utilisation shows how much of the time a disk is busy. It went from about a third to almost 100%, on the same service that is dropping events.
+
+    answer:
+      short: The local disk of analytics-ingest reached its speed limit, its buffer filled up, and it began dropping about 80% of incoming events.
+      paragraphs:
+        - >-
+          analytics-ingest writes each event to disk before passing it on, so that nothing is
+          lost if it restarts. Disks can only do so many operations per second (called IOPS).
+          Once it reached that limit, writes started to queue up.
+        - >-
+          Events wait in a buffer until they can be written. When the buffer filled, there was
+          nowhere to put new ones, so the service dropped them. The logs say this outright
+          ("write-ahead buffer full"), but the agents could not read them in this test.
+      category_note: Scored as resource exhaustion, because a resource ran out (the disk's capacity). No release or setting was changed.
+
+    timeline:
+      first_error: analytics-ingest starts dropping events because its buffer is full.
+      users_hit: About 80% of usage events are now being thrown away.
+      reported: Customer success reports that analytics events are being dropped.
+      data_ends: The data ends. The disk is still saturated and events are still being dropped.
+
+    fixes:
+      - "Now: move analytics-ingest to a faster disk."
+      - "Next: spread incoming events over more copies or more disks."
+      - "Later: alert on disk utilisation before the buffer fills."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. An app is many services calling each other.
+      - term: IOPS
+        meaning: How many read or write operations a disk can do per second.
+      - term: Disk utilisation
+        meaning: The share of time a disk is busy.
+      - term: Buffer
+        meaning: A waiting area for data on its way somewhere.
+      - term: Write-ahead
+        meaning: Saving data to disk first, so it isn't lost in a restart.
+      - term: Kafka
+        meaning: A system that passes messages between programs in order.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-11:
+    domain: saas_platform
+
+    summary:
+      company: Harbourline is an online software company. Customers log in to use its apps and are billed monthly.
+      problem: media-transcoder (the video processing program) crashed and restarted, and the jobs it was working on failed.
+      false_lead: Two changes landed within a minute of each other just before the crash, so it is tempting to pick one. Nothing left in the data can say which it was.
+      cause: The honest answer is "we can't tell". A graphics driver upgrade and an operating system update landed together on media-transcoder, and the evidence that would separate them was lost in the crash.
+      why_everyone: Only video processing was hit. The rest of the apps carried on normally, and the program restarted by itself.
+      fix: Roll the two changes out separately to find out which one is responsible.
+
+    what_went_wrong:
+      - >-
+        media-transcoder, the program that converts uploaded video, crashed once and restarted
+        by itself. The jobs in progress at that moment failed. The rest of the apps were not
+        affected. The platform on-call engineer reported it about 11 minutes after the crash.
+
+    impact:
+      - service: media-transcoder
+        metric: container_restarts
+        label: Times the program restarted
+        short: Times the program restarted
+      - service: api-gateway
+        metric: api_success_rate_pct
+        label: App requests that worked
+
+    misleading:
+      - decoy_type: red_herring_change
+        title: The operating system update
+        why_tempting: The base image moved to a new Ubuntu version seconds before the driver upgrade, and it could plausibly crash a program.
+        why_wrong: It could be the cause, and that is the point. Nothing in the remaining data rules it in or out.
+
+      - title: The graphics driver upgrade
+        why_tempting: The program depends on the graphics card, so a driver change feels like the natural culprit.
+        why_wrong: It is a reasonable guess, but only a guess. Picking it with confidence would be claiming something the data can't show.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 742ms" look suspicious when something is broken.
+        why_wrong: These 10 routine warnings are in other services and have no connection to the crash.
+
+    clues:
+      note: The two pieces of evidence that would have settled this are gone, which is why this case has no deciding clue. The container's logs were wiped when it restarted, and the graphics card metrics for the crash were never collected.
+
+    answer:
+      short: The right answer here is "inconclusive". Two changes landed together and nothing left in the data can separate them.
+      paragraphs:
+        - >-
+          The test does have a hidden true cause, the driver upgrade, so that answers can be
+          checked. But an investigator has no way of seeing it, because the crash logs and the
+          graphics card readings don't exist.
+        - >-
+          This case tests honesty. Saying "the driver did it" happens to match the hidden cause,
+          but nothing supports it, so it counts as wrong. The correct response is to name both
+          candidates and say what is missing.
+      category_note: Scored as correct only if the report says inconclusive. Committing to either change counts as wrong, even if it names the hidden cause.
+
+    timeline:
+      decoy_change: The operating system image is updated on media-transcoder.
+      other_change: The graphics driver is upgraded on media-transcoder, 35 seconds later.
+      users_hit: The program has crashed and restarted.
+      reported: The platform on-call engineer reports the crash.
+      data_ends: The data ends. The program is running again and the cause is still unknown.
+
+    fixes:
+      - "Now: keep both changes under watch, and be ready to roll them back."
+      - "Next: roll them out separately on a test machine and see which one crashes."
+      - "Later: keep crash logs outside the container, collect graphics card metrics, and never ship two risky changes at once."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. An app is many services calling each other.
+      - term: Inconclusive
+        meaning: The evidence can't separate the possible causes, so no cause is claimed.
+      - term: Driver
+        meaning: The software that lets programs use a piece of hardware.
+      - term: Base image
+        meaning: The operating system a container is built on.
+      - term: Container
+        meaning: A sealed box a program runs in. Its logs can vanish when it restarts.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.
+
+  INC-12:
+    domain: online_retail
+
+    summary:
+      company: Wrenfield Market is an online store. Customers browse products, fill a cart and place orders.
+      problem: About 13 in every 100 orders failed, and fulfillment-service (the delivery program) kept restarting.
+      false_lead: fulfillment-service was scaled up earlier, which looks suspicious. And shipping-carrier, the outside courier, got slow, which looks like the whole cause. The slow courier was only the trigger.
+      cause: fulfillment-service calls the courier with no time limit, so it is willing to wait forever. That missing limit is the fault. When the courier slowed down, all its workers got stuck waiting.
+      why_everyone: With every worker stuck, it couldn't even answer a health check, so it was restarted again and again, and orders needing delivery booking failed.
+      fix: Set a time limit on fulfillment-service's calls to the courier.
+
+    what_went_wrong:
+      - >-
+        Orders began failing and the share that worked fell from about 99% to about 87%. At the
+        same time, the delivery program, fulfillment-service, kept restarting. The number of
+        people shopping did not change. The storefront on-call engineer reported it about 12
+        minutes after it began.
+
+    impact:
+      - service: web-frontend
+        metric: order_success_rate_pct
+        label: Orders that worked
+        short: Orders that worked
+      - service: fulfillment-service
+        metric: upstream_latency_ms
+        label: Time the courier takes to answer
+        short: Time the courier takes to answer
+      - service: edge-lb
+        metric: requests_per_s
+        label: Requests arriving per second
+
+    misleading:
+      - decoy_type: red_herring_change
+        title: The delivery program was scaled up
+        why_tempting: fulfillment-service went from 3 to 5 copies shortly before the trouble, and it is the only change in the hour.
+        why_wrong: It happened 22 minutes before the first problem, and adding copies does not make calls hang. More copies would help, if anything.
+
+      - title: The outside courier is to blame
+        why_tempting: The courier really did slow down, from about 0.1 seconds to about 12 seconds.
+        why_wrong: That is the trigger, but slow suppliers are normal. The store's own program had no time limit, which turned a slow courier into an outage. That is what the answer key blames.
+
+      - title: A crash bug in the delivery program
+        why_tempting: Constantly restarting usually means a program is crashing.
+        why_wrong: It is not crashing. The restarts happen because it is too busy waiting to answer health checks, and its processor stays normal.
+        checks:
+          - service: fulfillment-service
+            metric: cpu_pct
+            label: fulfillment-service processor busy
+
+      - title: Checkout looks like the problem
+        why_tempting: checkout-api and web-frontend log dozens of timeouts.
+        why_wrong: Those warnings all point onward to fulfillment-service. They are waiting in line behind it.
+
+      - title: Harmless warnings in other services
+        why_tempting: Warnings such as "GC pause of 790ms" look suspicious when something is broken.
+        why_wrong: These 7 routine warnings are scattered across services, and some appeared before the trouble began.
+
+    clues:
+      log:
+        title: A call to the courier has been hanging for two minutes
+        meaning: The line says the call is still running after 119 seconds, and that no client timeout is configured. So nothing will ever make it give up.
+      metric:
+        title: All its workers are busy
+        meaning: Busy threads shows the share of workers occupied. It went from about 20% to 100%. With no free worker, nothing else can be done, including answering a health check.
+
+    answer:
+      short: fulfillment-service calls shipping-carrier with no time limit, so when the courier slowed down, every worker got stuck and the service kept being restarted.
+      paragraphs:
+        - >-
+          fulfillment-service has 200 workers, each handling one job. The courier slowed from
+          about 0.1 seconds to about 12 seconds. With no client timeout, each worker simply
+          waited, until all 200 were stuck.
+        - >-
+          Kubernetes checks each program by asking "are you alive?". With no free worker to
+          answer, the check failed and the program was restarted. It then filled up again, in a
+          loop. Orders that needed delivery booked timed out on the way back to the customer.
+      category_note: Scored as a dependency failure on fulfillment-service, because how it handles a slow dependency is the store's own defect. It's a judgement call, since the courier is the trigger.
+
+    timeline:
+      decoy_change: fulfillment-service is scaled from 3 to 5 copies. Nothing goes wrong.
+      first_sign: fulfillment-service logs a courier call still hanging after two minutes.
+      users_hit: The share of orders that work falls to about 87%.
+      first_error: Its health check fails, and the system starts restarting it.
+      reported: The storefront on-call engineer reports failing fulfilment.
+      data_ends: The data ends. The courier is still slow and the program is still restarting.
+
+    fixes:
+      - "Now: set a time limit on calls to shipping-carrier."
+      - "Next: make the health check independent of the busy workers."
+      - "Later: stop calling a slow supplier for a while when it degrades, and queue delivery bookings instead of waiting."
+
+    glossary:
+      - term: Service
+        meaning: One small program with one job. A website is many services calling each other.
+      - term: Client timeout
+        meaning: A limit on how long a program will wait for an answer.
+      - term: Thread pool
+        meaning: A fixed set of workers that handle jobs.
+      - term: Liveness probe
+        meaning: A regular "are you alive?" check. Fail it and the program is restarted.
+      - term: Kubernetes
+        meaning: The system that runs programs and restarts them when needed.
+      - term: Replica
+        meaning: One running copy of a program.
+      - term: UTC
+        meaning: The world reference time. All the times on this page are in UTC.

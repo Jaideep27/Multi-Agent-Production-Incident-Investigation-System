@@ -1,0 +1,5 @@
+* text=auto
+
+# These run inside Linux containers or under bash, where Windows line endings break them.
+*.sh text eol=lf
+Makefile text eol=lf

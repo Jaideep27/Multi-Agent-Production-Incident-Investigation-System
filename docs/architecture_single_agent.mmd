@@ -1,0 +1,99 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "primaryColor": "#FFFFFF",
+    "primaryBorderColor": "#E2722E",
+    "primaryTextColor": "#1F1006",
+    "lineColor": "#6B5646",
+    "clusterBkg": "#FBF7F0",
+    "clusterBorder": "#E9D5C0",
+    "fontFamily": "Arial",
+    "fontSize": "15px"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 30,
+    "rankSpacing": 45,
+    "wrappingWidth": 800
+  }
+}}%%
+flowchart TB
+
+  subgraph S1["Step 1: Setup with Docker"]
+    direction LR
+    compose["docker compose up<br/>same PostgreSQL 16 on any machine"]
+    init["Init scripts<br/>roles, tables, row-level security"]
+    generator["Seeded generator<br/>loads incidents and answer keys"]
+    batch["Batch runner<br/>starts one investigation"]
+    compose --> init
+    init --> generator
+    generator --> batch
+  end
+
+  subgraph S2["Step 2: Python loop"]
+    direction LR
+    limits["Same limits as the team<br/>60 LLM calls, 40 tool calls"]
+    loop{"Python loop<br/>keep going?<br/>up to 12 steps"}
+    limits --> loop
+  end
+
+  subgraph S3["Step 3: One agent"]
+    direction LR
+    investigator["Investigator<br/>one agent, every job<br/>no blackboard, no Critic"]
+    request["Request tools<br/>up to 4 per step"]
+    read["Read results<br/>latest 2 batches"]
+    notes[("Own notes<br/>must cite evidence")]
+    report["Final report<br/>or inconclusive"]
+
+    investigator -->|"needs data"| request
+    request -->|"tools answer"| read
+    read -->|"found something"| notes
+    notes -->|"next step"| investigator
+    investigator -->|"done, or step 12"| report
+  end
+
+  subgraph S4["Step 4: Model and tools"]
+    direction LR
+    llm["LLM client<br/>claude -p, Pydantic v2"]
+    claude["Anthropic Claude Haiku<br/>one call per step"]
+    llm --> claude
+    gateway["ToolGateway, an MCP client<br/>validates, retries, budgets, logs"]
+    mcp["MCP server over stdio<br/>one per run, read-only"]
+    tools["5 tools<br/>logs, metrics, changes,<br/>dependencies, past incidents"]
+    gateway --> mcp
+    mcp --> tools
+  end
+
+  subgraph S5["Step 5: PostgreSQL data"]
+    direction TB
+    evidence[("Evidence<br/>agent_ro, one incident only")]
+    results[("Results<br/>runs, calls, scores")]
+    answerkey[("Answer key<br/>scorer_ro only, hidden from the agent")]
+  end
+
+  subgraph S6["Step 6: Score and show"]
+    direction LR
+    scorer["Scorer<br/>compares report with the key"]
+    viewer["Web viewer<br/>FastAPI, Chart.js, Mermaid"]
+    tailscale["Tailscale Funnel<br/>public HTTPS"]
+    person["Reviewer<br/>browser"]
+    scorer --> viewer
+    viewer --> tailscale
+    tailscale --> person
+  end
+
+  S1 -->|"incident brief"| S2
+  S2 -->|"runs the next step"| S3
+  S3 -->|"the agent only sends requests"| S4
+  S4 -->|"read-only queries"| S5
+  S3 -->|"final report is saved"| S5
+  S5 -->|"only the Scorer reads the key"| S6
+
+  classDef agent fill:#B4400A,stroke:#B4400A,color:#FFFFFF,font-weight:bold;
+  classDef decision fill:#2B1A10,stroke:#2B1A10,color:#FFFFFF,font-weight:bold;
+  classDef store fill:#FFE3CF,stroke:#E2722E,color:#1F1006;
+  classDef locked fill:#2B1A10,stroke:#2B1A10,color:#FFFFFF;
+  class investigator,report agent;
+  class loop decision;
+  class notes,evidence,results store;
+  class answerkey locked;

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test Cases · Incident Investigator</title>
+  <link rel="stylesheet" href="/static/style.css?v=18">
+</head>
+<body>
+  <header class="top"></header>
+  <main>
+    <h1>Multi-agent vs single-agent incident investigation</h1>
+    <p class="sub">Two AI systems investigate the same simulated production incidents with the same model,
+      the same tools and the same limits. Each incident has a hidden answer key, so every conclusion can be checked.</p>
+
+    <div class="grid four section" id="at-a-glance"></div>
+
+    <h2>How it works</h2>
+    <div class="grid two section">
+      <div class="card system-card">
+        <div class="system-title"><span class="chip multi">Multi-agent team</span><span class="muted small">6 agents, shared blackboard</span></div>
+        <div id="team-agents"></div>
+      </div>
+      <div class="card system-card">
+        <div class="system-title"><span class="chip single">Single agent</span><span class="muted small">1 agent, works alone</span></div>
+        <div id="single-agent"></div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <div class="system-title"><strong>The <span id="tool-count"></span> tools</strong><span class="muted small">the same for both systems · structured requests and results · failures simulated on purpose</span></div>
+      <div id="tool-overview" class="tool-overview"></div>
+    </div>
+
+    <h2 style="margin-top:32px">Overall: team vs single agent <span class="muted small">(official evaluation: the first run of each case; reruns are not counted)</span></h2>
+    <div id="limits" class="rules"></div>
+    <div id="kpis" class="grid four section"></div>
+
+    <h2 style="margin-top:32px">The <span id="case-count"></span> test cases</h2>
+    <p class="hint" style="margin:-6px 0 14px">Open a case to see what really happened, what each system concluded, how the agents talked and how the tools behaved, or to rerun it. ✓/✗ is the newest result of each system (marked “rerun” after a rerun).</p>
+    <div id="cases" class="case-list section"></div>
+
+  </main>
+  <script src="/static/common.js?v=16"></script>
+  <script src="/static/overview.js?v=18"></script>
+</body>
+</html>

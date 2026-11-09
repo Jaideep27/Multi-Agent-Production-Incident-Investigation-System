@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "incident-investigator"
+version = "0.1.0"
+description = "Multi-agent production incident investigation system with a single-agent baseline"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.2",
+    "pyyaml>=6.0",
+    "argon2-cffi>=23.1",
+    "mcp>=2.3,<3",   # the server uses the 2.x low-level Server API and mcp.Client
+    "langgraph>=1.2,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    # the viewer's tests use FastAPI's test client
+    "fastapi>=0.110",
+    "httpx>=0.27",
+]
+api = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "db: needs a reachable PostgreSQL 16 server (see README, 'Running the tests')",
+]

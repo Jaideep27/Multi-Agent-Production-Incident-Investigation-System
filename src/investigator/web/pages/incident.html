@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test Case Â· Incident Investigator</title>
+  <link rel="stylesheet" href="/static/style.css?v=26">
+</head>
+<body>
+  <header class="top"></header>
+  <main class="case-page">
+    <p class="small"><a href="/">&larr; All test cases</a></p>
+
+    <div class="case-head">
+      <div>
+        <div class="eyebrow" id="case-id"></div>
+        <h1 id="title">Test case</h1>
+      </div>
+      <button id="rerun-open" class="primary">Rerun this case</button>
+    </div>
+    <div class="run-bar">
+      <span class="muted small">Showing:</span>
+      <div id="run-choices" class="chips"></div>
+    </div>
+    <div id="rerun-panel" class="rerun-panel hidden">
+      <div style="margin-bottom:10px">
+        <strong>Systems:</strong>
+        <label><input type="checkbox" id="rr-multi" checked> Multi-agent team</label>
+        <label><input type="checkbox" id="rr-single" checked> Single agent</label>
+      </div>
+      <div style="margin-bottom:10px">
+        <strong>Model:</strong>
+        <label><input type="radio" name="rr-model" value="haiku" checked> Haiku (fast; the model used for the official results)</label>
+        <label><input type="radio" name="rr-model" value="sonnet"> Sonnet (stronger; slower, uses more quota)</label>
+      </div>
+      <div style="margin-bottom:12px">
+        <strong>Mode:</strong>
+        <label><input type="radio" name="rr-mode" value="replay" checked> Replay (reuses recorded answers; free only if this model has already rerun this case)</label>
+        <label><input type="radio" name="rr-mode" value="fresh"> Fresh run (asks Claude again; may differ; about 4 min, uses quota)</label>
+      </div>
+      <p class="small muted">The team reruns with agents talking to each other directly, and you can follow both systems live in the Agent history section. Where a company background is written, the agents also get it: what the company does and what each service is for. They never get the root cause or the rest of the story. The official results were produced the same way.</p>
+      <button id="rerun-start" class="primary">Start</button>
+      <span id="rerun-message" class="small muted" style="margin-left:10px"></span>
+      <div id="rerun-progress" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card in-short" id="in-short"></div>
+
+    <section class="step-section">
+      <h2><span class="num">1</span> <span id="story-heading">What this case is about</span></h2>
+      <div class="card" id="story"></div>
+    </section>
+
+    <section class="step-section">
+      <h2><span class="num">2</span> The real cause <span class="muted small">(hidden from both systems)</span></h2>
+      <div class="card reason actual" id="truth-card"></div>
+    </section>
+
+    <section class="step-section">
+      <h2><span class="num">3</span> Results: multi-agent team vs single agent</h2>
+      <div class="grid two" id="results"></div>
+      <div class="card" style="margin-top:20px">
+        <h3>What each one spent</h3>
+        <div id="compare"></div>
+      </div>
+    </section>
+
+    <section class="step-section">
+      <h2><span class="num">4</span> Agent history</h2>
+      <div class="card">
+        <div class="conversation-head">
+          <button id="conversation-toggle" class="primary">Show agent history</button>
+          <span id="conversation-state" class="small muted"></span>
+        </div>
+        <div id="conversation-panel" class="hidden">
+          <div class="chips" style="margin:12px 0 6px">
+            <button class="chip multi" id="history-multi_agent">Multi-agent team</button>
+            <button class="chip" id="history-single_agent">Single agent</button>
+          </div>
+          <div class="chips" id="conversation-filters" style="margin:6px 0 12px">
+            <button class="chip multi" id="conversation-all">Everything</button>
+            <button class="chip" id="conversation-direct">Only agents talking to each other</button>
+          </div>
+          <div id="conversation-feed" class="conversation-feed"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="step-section">
+      <h2><span class="num">4</span> How each one reached its answer</h2>
+      <p class="hint" style="margin:0 0 12px">Built from what really happened in this run, and updated live during a rerun.
+        The buttons step through every agent turn.</p>
+      <div class="card">
+        <div class="system-title"><span class="chip multi">Multi-agent team</span><span class="muted small">Who spoke to whom, top to bottom. Click any arrow or badge to see that step.</span></div>
+        <div id="flow-multi" class="routing"><p class="muted small">Drawingâ€¦</p></div>
+        <button class="primary wide" id="walk-multi">&#9654; Walk through the team's investigation</button>
+      </div>
+      <div class="card">
+        <div class="system-title"><span class="chip single">Single agent</span><span class="muted small">One agent, working alone, step by step. Click any arrow to see that step.</span></div>
+        <div id="flow-single" class="routing"><p class="muted small">Drawingâ€¦</p></div>
+        <button class="primary wide single-button" id="walk-single">&#9654; Walk through the single agent's investigation</button>
+      </div>
+    </section>
+
+    <section class="step-section" id="metrics-section">
+      <h2><span class="num">6</span> What the metrics show</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>The signal that proves the cause</h3>
+          <p class="metric-sentence" id="metric-key-text"></p>
+          <div class="chart-box short"><canvas id="metric-key"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>What users felt</h3>
+          <p class="metric-sentence" id="metric-users-text"></p>
+          <div class="chart-box short"><canvas id="metric-users"></canvas></div>
+        </div>
+      </div>
+      <p class="hint" style="margin:10px 0 0">A dashed line marks a recorded change (a deploy or a config change).</p>
+    </section>
+  </main>
+
+  <!-- the step-by-step walk-through -->
+  <div id="walk" class="walk hidden">
+    <div class="walk-box">
+      <div class="walk-head">
+        <div>
+          <div class="eyebrow" id="walk-title"></div>
+          <div class="walk-step-title" id="walk-step-title"></div>
+        </div>
+        <button id="walk-close" class="link">Close &times;</button>
+      </div>
+      <div class="walk-progress"><span id="walk-bar"></span></div>
+      <div class="walk-layout">
+        <nav id="walk-rail" class="walk-rail" aria-label="Steps"></nav>
+        <div id="walk-body" class="walk-body"></div>
+      </div>
+      <div class="walk-nav">
+        <button id="walk-prev">&larr; Back</button>
+        <span id="walk-count" class="muted small"></span>
+        <button id="walk-next" class="primary">Next &rarr;</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script src="/static/common.js?v=16"></script>
+  <!-- the case page: shared helpers first, one file per section, main.js last -->
+  <script src="/static/incident/base.js?v=20"></script>
+  <script src="/static/incident/summary.js?v=20"></script>
+  <script src="/static/incident/story.js?v=25"></script>
+  <script src="/static/incident/results.js?v=21"></script>
+  <script src="/static/incident/format.js?v=2"></script>
+  <script src="/static/incident/routing.js?v=6"></script>
+  <script src="/static/incident/walkthrough.js?v=25"></script>
+  <script src="/static/incident/metrics.js?v=20"></script>
+  <script src="/static/incident/rerun.js?v=21"></script>
+  <script src="/static/incident/conversation.js?v=3"></script>
+  <script src="/static/incident/main.js?v=21"></script>
+</body>
+</html>

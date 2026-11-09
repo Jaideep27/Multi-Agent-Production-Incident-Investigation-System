@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Prompts · Incident Investigator</title>
+  <link rel="stylesheet" href="/static/style.css?v=18">
+</head>
+<body>
+  <header class="top"></header>
+  <main class="case-page">
+    <p class="small"><a href="/">&larr; Home</a></p>
+    <h1>The agents' prompts</h1>
+    <p class="sub">Every agent is one call to Claude (Haiku) with a fixed instruction, shown here exactly as the system
+      uses it. The agent must answer in the JSON format below it; an answer that does not fit is sent back with the
+      problem (at most 3 attempts). No prompt mentions any test case, service or answer: a test checks that.</p>
+    <p class="small muted" style="margin-top:-12px">Each call's message also contains the incident brief, the
+      blackboard so far and the agent's tool results; open a case and use the walk-through to see the exact message
+      for every step.</p>
+    <div id="prompt-list"></div>
+  </main>
+  <script src="/static/common.js?v=16"></script>
+  <script>
+    const ROLES = {
+      orchestrator: ["Multi-agent team", "Plans each round and hands out tasks"],
+      observability: ["Multi-agent team", "Logs and metrics specialist"],
+      dependency: ["Multi-agent team", "Changes, dependencies and past incidents specialist"],
+      reasoning: ["Multi-agent team", "Ranks the competing causes"],
+      critic: ["Multi-agent team", "Approves the top cause or sends a follow-up check"],
+      reporting: ["Multi-agent team", "Writes the final report"],
+      investigator: ["Single agent", "Does everything alone"],
+    };
+    async function main() {
+      await startPage();
+      const data = await api("/api/prompts");
+      const list = document.getElementById("prompt-list");
+      for (const item of data.prompts) {
+        const role = ROLES[item.agent] || ["", ""];
+        const kind = role[0] === "Single agent" ? "single" : "multi";
+        list.appendChild(el("div", { class: "card" }, [
+          el("div", { class: "system-title" }, [
+            el("strong", { style: "font-size:16px", text: item.agent.charAt(0).toUpperCase() + item.agent.slice(1) }),
+            chip(role[0], kind), el("span", { class: "muted small", text: role[1] }),
+          ]),
+          el("pre", { class: "prompt-text", text: item.instructions }),
+          el("details", { class: "raw" }, [el("summary", { text: "The JSON format its answer must follow" }),
+            el("pre", { text: JSON.stringify(JSON.parse(item.schema || "{}"), null, 2) })]),
+        ]));
+      }
+    }
+    main();
+  </script>
+</body>
+</html>

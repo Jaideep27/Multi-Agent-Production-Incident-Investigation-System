@@ -1,0 +1,106 @@
+# General background about each invented company. Reruns give this to the agents, so it must
+# describe the healthy system only and be the same for every incident of that company.
+# Never put anything about a specific incident here (tests check this).
+
+search_platform:
+  name: Kestrel Search
+  what_it_does: >-
+    Kestrel Search runs a search website. You type some words into a box, and Kestrel shows you
+    the best matching results. Behind that one box, seven small programs (called services)
+    work together.
+  how_it_works: >-
+    When you press Search, edge-lb passes your request to search-service. search-service asks
+    query-parser to work out what your words mean. It then fetches the results from
+    elasticsearch, or from results-cache if someone searched the same thing moments ago, and
+    asks recommendation-engine for related suggestions.
+  services:
+    - name: edge-lb
+      plain: The front door. Receives every search and hands it to a copy of search-service.
+    - name: search-service
+      plain: The coordinator. Takes your search and asks the other services for what it needs.
+    - name: query-parser
+      plain: The interpreter. Works out what the typed words mean.
+    - name: elasticsearch
+      plain: The library. A big database holding everything that can be found.
+    - name: results-cache
+      plain: Short-term memory. Keeps recent answers so that repeat searches are instant.
+    - name: recommendation-engine
+      plain: The suggestions box. Adds related results.
+    - name: model-store
+      plain: The files that recommendation-engine needs in order to make its suggestions.
+
+online_retail:
+  name: Wrenfield Market
+  what_it_does: >-
+    Wrenfield Market runs an online store. Customers browse products, fill a cart and place
+    orders. Behind the website, eleven small programs (called services) work together.
+  how_it_works: >-
+    Every visit arrives through edge-lb, which passes it to web-frontend. web-frontend checks
+    session-cache to see who the customer is, and gets product pages from catalog-graphql, which
+    asks inventory-grpc what is in stock. When a customer places an order, web-frontend calls
+    checkout-api. checkout-api saves the order in orders-db, takes payment through
+    payment-service, which first asks fraud-scoring-api to assess the payment, and hands the
+    order to fulfillment-service, which books delivery with shipping-carrier.
+  services:
+    - name: edge-lb
+      plain: The front door. Receives every visit and hands it to a copy of web-frontend.
+    - name: web-frontend
+      plain: The website itself. Builds the pages customers see.
+    - name: session-cache
+      plain: Short-term memory that remembers who is logged in.
+    - name: catalog-graphql
+      plain: The product catalogue behind the product pages.
+    - name: inventory-grpc
+      plain: Knows how much of each product is in stock.
+    - name: checkout-api
+      plain: The till. Handles placing an order from start to finish.
+    - name: orders-db
+      plain: The database where orders are saved.
+    - name: payment-service
+      plain: Takes the customer's payment.
+    - name: fraud-scoring-api
+      plain: Assesses whether a payment looks genuine.
+    - name: fulfillment-service
+      plain: Arranges for an order to be packed and sent.
+    - name: shipping-carrier
+      plain: An outside delivery company's system.
+
+saas_platform:
+  name: Harbourline
+  what_it_does: >-
+    Harbourline is an online software company. Customers log in to use its apps, upload media
+    and are billed monthly. Behind the apps, twelve small programs (called services) work
+    together.
+  how_it_works: >-
+    Requests arrive through edge-lb, which passes them to api-gateway. api-gateway sends them on
+    to the right service: auth-service for logins, user-profile for account details,
+    billing-service for payments and analytics-ingest for usage tracking. billing-service keeps
+    its records in billing-db and publishes invoice messages on kafka-billing, which
+    invoice-worker reads to create invoices. analytics-ingest publishes usage events on
+    kafka-events, where media-transcoder also picks up its jobs. notification-worker sends
+    messages to customers, using user-profile and auth-service.
+  services:
+    - name: edge-lb
+      plain: The front door. Receives every request and hands it to api-gateway.
+    - name: api-gateway
+      plain: The switchboard. Sends each request to the right service.
+    - name: auth-service
+      plain: Checks who you are when you log in.
+    - name: user-profile
+      plain: Holds account details.
+    - name: billing-service
+      plain: Handles charges and starts each invoice.
+    - name: billing-db
+      plain: The database that holds billing records.
+    - name: kafka-billing
+      plain: The message line that carries invoice work.
+    - name: invoice-worker
+      plain: A background program that turns messages into invoices.
+    - name: analytics-ingest
+      plain: Collects usage events from the apps.
+    - name: kafka-events
+      plain: The message line that carries usage events and media jobs.
+    - name: media-transcoder
+      plain: A background program that converts uploaded video.
+    - name: notification-worker
+      plain: A background program that sends messages to customers.

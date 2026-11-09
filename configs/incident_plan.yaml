@@ -1,0 +1,635 @@
+# The incident plan: one entry per incident in the dataset (docs/implementation_plan.md §4).
+#
+# THIS FILE IS PART OF THE ANSWER KEY. Only the generator reads it. Agents, prompts, tools
+# and the scorer must never load it or name its plan IDs or archetypes (tests/unit/
+# test_leakage.py enforces that for src/).
+#
+# Each entry = archetype (what breaks, with its parameters) x domain topology, plus seeded
+# decoys, noise and tool-failure rules. The seed drives every random choice. Inconclusive
+# entries add `insufficiency`: what was never collected (withhold), what a persistent tool
+# rule blocks (unreachable), and the plausible wrong answers the visible data supports.
+# Noise is applied in list order; a log gap goes last so it also removes warnings inside it.
+
+incidents:
+  # ======================================================== crypto_exchange
+  - plan_id: CX-1
+    domain: crypto_exchange
+    archetype: traffic_surge
+    seed: 1101
+    expected_outcome: identifiable
+    params: {component: order-api, surge_factor: 3.8, max_replicas: 4}
+    decoys:
+      - type: red_herring_change
+        params: {service: price-feed-client, minutes_before: [9, 11]}
+    noise:
+      - type: benign_warnings
+      - type: clock_skew
+        params: {service: matching-engine, seconds: 45}
+
+  - plan_id: CX-2
+    domain: crypto_exchange
+    archetype: resource_saturation
+    seed: 1102
+    expected_outcome: identifiable
+    params: {component: wallet-service, mode: memory_oom, limit: 512Mi}
+    decoys:
+      - type: downstream_symptom
+        params: {service: blockchain-node, message: "peer sync lagging 3 blocks behind tip"}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_metrics
+        mode: transient
+        params: {fail_first_n: 1, status: timeout}
+
+  - plan_id: CX-3
+    domain: crypto_exchange
+    archetype: cache_degradation
+    seed: 1103
+    expected_outcome: identifiable
+    params: {component: redis-orderbook, mode: restart}
+    decoys:
+      - type: downstream_symptom
+        params: {service: postgres-ledger, level: WARN, metric: cpu_pct, bad_mean: 88.0,
+                 message: "slow query 2300ms: SELECT * FROM order_book_snapshot WHERE market = $1"}
+    noise:
+      - type: benign_warnings
+      - type: log_gap
+
+  - plan_id: CX-4
+    domain: crypto_exchange
+    archetype: lock_contention
+    seed: 1104
+    expected_outcome: inconclusive
+    params: {component: postgres-ledger, table: ledger_entries, cause: long_transaction}
+    decoys:
+      - type: red_herring_change
+        params: {service: matching-engine}
+    noise:
+      - type: benign_warnings
+      - type: conflicting_sources
+        params: {service: postgres-ledger, metric: cpu_pct, factor: 0.55}
+    tool_failures:
+      - tool: get_change_history
+        mode: persistent
+        params: {status: error, when: {include_diff: true}}
+    insufficiency:
+      reason: >-
+        Lock-wait logs and lock metrics were never collected, and the diff of the
+        matching-engine deploy that would rule it out cannot be fetched.
+      withhold: [logs, metric]
+      alternatives:
+        - {category: bad_deploy, component: matching-engine,
+           why_plausible: "a deploy minutes before ledger writes slowed; its diff is unavailable"}
+
+  - plan_id: CX-5
+    domain: crypto_exchange
+    archetype: upstream_vendor_failure
+    seed: 1105
+    expected_outcome: identifiable
+    params: {component: price-feed-client, vendor: market-data-vendor, status: 502}
+    decoys:
+      - type: unrelated_spike
+        params: {service: matching-engine, metric: cpu_pct, bad_mean: 91.0}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_logs
+        mode: partial
+        params: {keep_fraction: 0.7}
+
+  # ======================================================== payment_gateway
+  - plan_id: PG-1
+    domain: payment_gateway
+    archetype: pool_size_regression
+    seed: 1001
+    expected_outcome: identifiable
+    params:
+      component: payment-router
+      dependency: postgres-payments
+      setting: db.max_pool_size
+      from_value: 100
+      to_value: 20
+    decoys:
+      - type: red_herring_change
+        params:
+          service: notification-service
+      - type: lookalike_history
+        params:
+          title: UPI failures during partner bank outage
+          category: dependency_failure
+          component: bank-adapter
+          resolution: failed over to the secondary bank
+    noise:
+      - type: benign_warnings
+      - type: log_gap
+    tool_failures:
+      - tool: query_logs
+        mode: transient
+        params:
+          fail_first_n: 1
+          status: timeout
+
+  - plan_id: PG-2
+    domain: payment_gateway
+    archetype: lb_misbalance
+    seed: 1002
+    expected_outcome: identifiable
+    params: {component: edge-lb, backend: payment-api, mode: weight_skew}
+    decoys:
+      - type: unrelated_spike
+        params: {service: bank-adapter, metric: p99_latency_ms, bad_mean: 1450.0}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: PG-3
+    domain: payment_gateway
+    archetype: cache_degradation
+    seed: 1003
+    expected_outcome: identifiable
+    params: {component: redis-idempotency, mode: eviction_policy}
+    decoys:
+      - type: downstream_symptom
+        params: {service: postgres-payments, metric: cpu_pct, bad_mean: 79.0,
+                 message: "slow query 1800ms: INSERT INTO payment_attempts ... ON CONFLICT DO NOTHING"}
+      - type: red_herring_change
+        params: {service: webhook-worker}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: PG-4
+    domain: payment_gateway
+    archetype: retry_policy_regression
+    seed: 1004
+    expected_outcome: identifiable
+    params: {component: webhook-worker, target: merchant endpoints}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: get_change_history
+        mode: partial
+        params: {keep_fraction: 0.7}
+
+  - plan_id: PG-5
+    domain: payment_gateway
+    archetype: certificate_expiry
+    seed: 1005
+    expected_outcome: inconclusive
+    params: {component: bank-adapter, peer: upi-switch, not_after: "2026-10-31T00:00:00Z",
+             rotation_change: true}
+    decoys:
+      - type: lookalike_history
+        params:
+          title: UPI failures during partner bank outage
+          category: dependency_failure
+          component: upi-switch
+          resolution: waited for the bank to recover
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: get_change_history
+        mode: persistent
+        params: {status: timeout}
+    insufficiency:
+      reason: >-
+        The handshake errors that name the expired certificate were never logged, the
+        handshake-failure metric was not collected, and the certificate rotation record
+        cannot be fetched; only connection resets are visible.
+      withhold: [logs, metric]
+      unreachable: [change]
+      alternatives:
+        - {category: dependency_failure, component: upi-switch,
+           why_plausible: "connection resets toward the bank look like a bank-side outage"}
+
+  # ======================================================== ott
+  - plan_id: OTT-1
+    domain: ott
+    archetype: traffic_surge
+    seed: 1201
+    expected_outcome: identifiable
+    params: {component: playback-service, surge_factor: 4.2, max_replicas: 4}
+    decoys:
+      - type: red_herring_change
+        params: {service: catalog-api, minutes_before: [150, 200]}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: OTT-2
+    domain: ott
+    archetype: cache_degradation
+    seed: 1202
+    expected_outcome: identifiable
+    params: {component: redis-catalog, mode: aligned_ttl, ttl_s: 600}
+    decoys:
+      - type: downstream_symptom
+        params: {service: postgres-meta, metric: cpu_pct, bad_mean: 86.0,
+                 message: "CPU at 86% serving catalog queries"}
+    noise:
+      - type: benign_warnings
+      - type: conflicting_sources
+        params: {service: redis-catalog, metric: hit_ratio_pct, factor: 1.05}
+
+  - plan_id: OTT-3
+    domain: ott
+    archetype: lb_misbalance
+    seed: 1203
+    expected_outcome: identifiable
+    params: {component: edge-lb, backend: origin-east, other_backend: origin-west,
+             mode: region_misroute}
+    decoys:
+      - type: unrelated_spike
+        params: {service: license-service, metric: p99_latency_ms, bad_mean: 900.0}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_logs
+        mode: transient
+        params: {fail_first_n: 1, status: timeout}
+
+  - plan_id: OTT-4
+    domain: ott
+    archetype: upstream_vendor_failure
+    seed: 1204
+    expected_outcome: identifiable
+    params: {component: license-service, vendor: drm-provider, status: 503}
+    decoys:
+      - type: red_herring_change
+        params: {service: playback-service, minutes_before: [120, 180]}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: OTT-5
+    domain: ott
+    archetype: bad_release
+    seed: 1205
+    expected_outcome: identifiable
+    params: {component: auth-service, mode: query_overload, version: v3.8.0,
+             previous_version: v3.7.4, database: postgres-meta}
+    decoys:
+      - type: red_herring_change
+        params: {service: cdn-edge, change_type: config_change, minutes_before: [4, 8]}
+    noise:
+      - type: benign_warnings
+      - type: clock_skew
+        params: {service: auth-service, seconds: 90}
+
+  # ======================================================== ecommerce
+  - plan_id: EC-1
+    domain: ecommerce
+    archetype: lock_contention
+    seed: 1301
+    expected_outcome: identifiable
+    params: {component: postgres-orders, table: inventory, cause: hot_row}
+    decoys:
+      - type: downstream_symptom
+        params: {service: checkout-service, message: "payment-ext call slow: 2800ms"}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: EC-2
+    domain: ecommerce
+    archetype: resource_saturation
+    seed: 1302
+    expected_outcome: identifiable
+    params: {component: cart-service, mode: cpu_throttle, limit: 500m}
+    decoys:
+      - type: unrelated_spike
+        params: {service: redis-cart, metric: cpu_pct, bad_mean: 72.0}
+    noise:
+      - type: benign_warnings
+      - type: conflicting_sources
+        params: {service: cart-service, metric: cpu_pct, factor: 0.45}
+
+  - plan_id: EC-3
+    domain: ecommerce
+    archetype: bad_release
+    seed: 1303
+    expected_outcome: identifiable
+    params: {component: checkout-service, mode: memory_leak, version: v5.2.0,
+             previous_version: v5.1.3}
+    decoys:
+      - type: red_herring_change
+        params: {service: inventory-service, change_type: scaling, minutes_before: [10, 14]}
+      - type: red_herring_change
+        params: {service: edge-lb, change_type: infra, minutes_before: [25, 35]}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: get_change_history
+        mode: partial
+        params: {keep_fraction: 0.7}
+
+  - plan_id: EC-4
+    domain: ecommerce
+    archetype: rate_limit_throttling
+    seed: 1304
+    expected_outcome: inconclusive
+    params: {component: payment-ext, mode: callbacks, log_service: checkout-service, limit: 50}
+    decoys:
+      - type: downstream_symptom
+        params: {service: order-worker, message: "order still pending_payment after 600s"}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_logs
+        mode: persistent
+        params: {status: timeout}
+      - tool: get_service_dependencies
+        mode: persistent
+        params: {status: error}
+    insufficiency:
+      reason: >-
+        The callback rejection logs and throttling metrics were never collected, and the
+        log and dependency tools fail for this incident, so the throttling is invisible.
+      withhold: [logs, metric]
+      alternatives:
+        - {category: resource_exhaustion, component: order-worker,
+           why_plausible: "orders pile up in the worker's pending state"}
+
+  - plan_id: EC-5
+    domain: ecommerce
+    archetype: rate_limit_throttling
+    seed: 1305
+    expected_outcome: identifiable
+    params: {component: edge-lb, mode: per_ip, limit: 100}
+    decoys:
+      - type: unrelated_spike
+        params: {service: storefront-api, metric: cpu_pct, bad_mean: 68.0}
+      - type: red_herring_change
+        params: {service: cart-service}
+    noise:
+      - type: benign_warnings
+
+  # ======================================================== food_delivery
+  - plan_id: FD-1
+    domain: food_delivery
+    archetype: resource_saturation
+    seed: 1401
+    expected_outcome: identifiable
+    params: {component: postgres-orders, mode: connection_limit, max_connections: 200,
+             scaled_service: order-service, replicas_from: 4, replicas_to: 9}
+    decoys:
+      - type: unrelated_spike
+        params: {service: maps-client, metric: p99_latency_ms, bad_mean: 1300.0}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: FD-2
+    domain: food_delivery
+    archetype: rate_limit_throttling
+    seed: 1402
+    expected_outcome: identifiable
+    params: {component: maps-client, mode: quota, upstream: maps-api, limit: 100000}
+    decoys:
+      - type: red_herring_change
+        params: {service: dispatch-service}
+    noise:
+      - type: benign_warnings
+      - type: log_gap
+
+  - plan_id: FD-3
+    domain: food_delivery
+    archetype: bad_release
+    seed: 1403
+    expected_outcome: inconclusive
+    params: {component: dispatch-consumer, mode: consumer_bug, version: v2.4.0,
+             previous_version: v2.3.9}
+    noise:
+      - type: benign_warnings
+      - type: conflicting_sources
+        params: {service: kafka-dispatch, metric: consumer_lag, factor: 0.3}
+    tool_failures:
+      - tool: query_logs
+        mode: persistent
+        params: {status: timeout}
+      - tool: query_metrics
+        mode: partial
+        params: {keep_fraction: 0.6}
+    insufficiency:
+      reason: >-
+        The consumer's error logs were never collected and log queries fail, and the two
+        lag sources disagree, so nothing ties the stalled assignments to the release.
+      withhold: [logs]
+      alternatives:
+        - {category: resource_exhaustion, component: kafka-dispatch,
+           why_plausible: "consumer lag on the dispatch topic looks like a partition backlog"}
+
+  - plan_id: FD-4
+    domain: food_delivery
+    archetype: lb_misbalance
+    seed: 1404
+    expected_outcome: identifiable
+    params: {component: edge-lb, backend: rider-api, mode: sticky_sessions}
+    decoys:
+      - type: downstream_symptom
+        params: {service: redis-geo, message: "slow GEORADIUS 180ms on riders:active"}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: FD-5
+    domain: food_delivery
+    archetype: certificate_expiry
+    seed: 1405
+    expected_outcome: identifiable
+    params: {component: notification-service, peer: push-provider,
+             not_after: "2026-10-20T00:00:00Z", affects_business: false,
+             summary: "Push notifications to riders and customers are delayed by about 20 minutes"}
+    decoys:
+      - type: red_herring_change
+        params: {service: notification-service}
+      - type: unrelated_spike
+        params: {service: kafka-dispatch, metric: consumer_lag, bad_mean: 5200.0}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: get_service_dependencies
+        mode: transient
+        params: {fail_first_n: 1, status: timeout}
+
+  # ======================================================== story-driven evaluation set
+  # Twelve multi-step production stories (the evaluation set): simple baselines, misleading
+  # evidence, conflicting data, tool failures, an inconclusive case and deep dependency chains.
+
+  # ---- simple baselines
+  - plan_id: INC-01
+    domain: online_retail
+    archetype: bad_release
+    seed: 1501
+    expected_outcome: identifiable
+    params: {component: checkout-api, mode: input_exception, version: v2.4.1,
+             previous_version: v2.4.0}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: INC-02
+    domain: online_retail
+    archetype: session_cache_saturation
+    seed: 1502
+    expected_outcome: identifiable
+    params: {component: session-cache, client: web-frontend, surge_factor: 4.0}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: INC-03
+    domain: online_retail
+    archetype: pool_size_regression
+    seed: 1503
+    expected_outcome: identifiable
+    params:
+      component: checkout-api
+      dependency: orders-db
+      setting: db.max_pool_size
+      from_value: 100
+      to_value: 10
+    noise:
+      - type: benign_warnings
+
+  # ---- misleading evidence
+  - plan_id: INC-04
+    domain: online_retail
+    archetype: certificate_expiry
+    seed: 1504
+    expected_outcome: identifiable
+    params: {component: fraud-scoring-api, peer: payment-service, side: server,
+             not_after: "2026-10-30T14:36:00Z"}
+    decoys:
+      - type: red_herring_change
+        params:
+          service: payment-service
+          minutes_before: [1, 2]
+          diff: {README.md: "updated setup notes", log_format: {from: text, to: json}}
+    noise:
+      - type: benign_warnings
+
+  - plan_id: INC-05
+    domain: search_platform
+    archetype: feature_flag_regression
+    seed: 1505
+    expected_outcome: identifiable
+    params: {component: query-parser, flag: fuzzy_synonyms, entry_latency_service: search-service,
+             lookalike_service: elasticsearch}
+    decoys:
+      - type: lookalike_history
+        params:
+          title: Search p99 at 8 s caused by Elasticsearch GC pauses
+          category: resource_exhaustion
+          component: elasticsearch
+          resolution: raised the JVM heap and tuned G1GC
+          symptoms: ["search p99 latency above 8 s", "search timeouts", "elasticsearch GC pauses"]
+    noise:
+      - type: benign_warnings
+
+  # ---- conflicting data
+  - plan_id: INC-06
+    domain: online_retail
+    archetype: swallowed_error
+    seed: 1506
+    expected_outcome: identifiable
+    params: {component: inventory-grpc, caller: catalog-graphql, version: v4.2.0,
+             previous_version: v4.1.3}
+    noise:
+      - type: benign_warnings
+      - type: conflicting_sources
+        params: {service: catalog-graphql, metric: error_rate_pct, factor: 0.5}
+
+  - plan_id: INC-07
+    domain: saas_platform
+    archetype: rate_limiter_retry_storm
+    seed: 1507
+    expected_outcome: identifiable
+    params: {component: auth-service, clients: [user-profile, notification-worker]}
+    decoys:
+      - type: downstream_symptom
+        params: {service: user-profile,
+                 message: "auth-service call timed out after 2000ms; retrying (attempt 3/3)"}
+      - type: downstream_symptom
+        params: {service: notification-worker,
+                 message: "user-profile call timed out after 2000ms; retrying (attempt 3/3)"}
+    noise:
+      - type: benign_warnings
+      - type: clock_skew
+        params: {service: user-profile, seconds: -240}
+
+  # ---- complex story: delayed multi-hop chain
+  - plan_id: INC-08
+    domain: saas_platform
+    archetype: schema_migration_backlog
+    seed: 1508
+    expected_outcome: identifiable
+    params: {component: billing-service, worker: invoice-worker, queue: kafka-billing,
+             version: v3.0.0, lead_minutes: 45}
+    decoys:
+      - type: red_herring_change
+        params: {service: analytics-ingest, change_type: config_change, minutes_before: [2, 6]}
+    noise:
+      - type: benign_warnings
+
+  # ---- tool failures
+  - plan_id: INC-09
+    domain: search_platform
+    archetype: resource_saturation
+    seed: 1509
+    expected_outcome: identifiable
+    params: {component: recommendation-engine, mode: memory_oom, limit: 2Gi}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_logs
+        mode: transient
+        params: {fail_first_n: 1, status: timeout}
+      - tool: query_metrics
+        mode: partial
+        params: {keep_fraction: 0.5}
+
+  - plan_id: INC-10
+    domain: saas_platform
+    archetype: io_saturation
+    seed: 1510
+    expected_outcome: identifiable
+    params: {component: analytics-ingest}
+    noise:
+      - type: benign_warnings
+    tool_failures:
+      - tool: query_logs
+        mode: persistent
+        params: {status: error}
+
+  # ---- inconclusive: evidence wiped, two changes at once
+  - plan_id: INC-11
+    domain: saas_platform
+    archetype: crash_with_two_changes
+    seed: 1511
+    expected_outcome: inconclusive
+    params: {component: media-transcoder, driver_from: "550.54", driver_to: "555.42"}
+    decoys:
+      - type: red_herring_change
+        params:
+          service: media-transcoder
+          change_type: infra
+          minutes_before: [0, 0]
+          summary: media-transcoder base OS image update
+          diff: {base_image: {from: ubuntu-22.04.4, to: ubuntu-24.04.1}}
+    noise:
+      - type: benign_warnings
+    insufficiency:
+      reason: >-
+        The container's logs were wiped when it restarted and the crash-time GPU metrics were
+        never scraped; a GPU driver upgrade and a base OS image update landed in the same
+        minute, and nothing left distinguishes them.
+      withhold: [logs, metric]
+      alternatives:
+        - {category: config_change, component: media-transcoder,
+           why_plausible: "the base OS image changed in the same minute and could crash it too"}
+
+  # ---- complex story: deep dependency chain
+  - plan_id: INC-12
+    domain: online_retail
+    archetype: missing_client_timeout
+    seed: 1512
+    expected_outcome: identifiable
+    params: {component: fulfillment-service, vendor: shipping-carrier}
+    decoys:
+      - type: red_herring_change
+        params: {service: fulfillment-service, change_type: scaling, minutes_before: [12, 20]}
+    noise:
+      - type: benign_warnings
